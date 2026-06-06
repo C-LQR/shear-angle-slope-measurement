@@ -10,6 +10,7 @@ Use this skill to turn a shear/flow image into reproducible slope outputs:
 - cropped local PNG: `Local/<image_stem>_local.png`
 - annotated cropped PNGs under `Local`
 - Excel workbook in the root directory, with sheet name `<image_stem>` plus the Chinese suffix for "fitting result".
+- aggregate Excel worksheets named with the Chinese labels for "shear angle" and "discharge distance".
 
 ## Coordinate Convention
 
@@ -33,13 +34,14 @@ Use local cropped-image coordinates in final reporting unless the user explicitl
 7. Measure horizontal discharge distance from the leftmost valid material point inside the transparent box to the rear endpoint of the outside-flow material. Name this measurement with the Chinese label for "discharge distance". Use the transparent box length as the scale reference; default actual length is 100 mm.
 8. Save:
    - original crop PNG
-   - annotated cropped PNGs with only:
+   - annotated crop PNGs with only:
      - fitting equation
      - shear angle
      - R^2
      - fit point count `n`
      - red dashed discharge-distance marker and label
-   - Excel result table in one worksheet, without secondary tables.
+   - Excel result table in one per-image worksheet, without secondary tables
+   - aggregate worksheets in the same workbook for shear-angle data and discharge-distance data.
 9. Verify file existence, image dimensions, and key workbook cells.
 
 ## Script
@@ -89,6 +91,13 @@ The script also writes distance columns using the transparent box as scale. The 
   - single-fit mode: Chinese prefix for "total" + `<stem>` + `fit.png`
   - segmented mode: Chinese prefix for "former" + `<stem>` + `fit.png`, Chinese prefix for "latter" + `<stem>` + `fit.png`, and Chinese prefix for "total" + `<stem>` + `fit.png`
 - Name the Excel worksheet `<stem>` plus the Chinese suffix for "fitting result".
+- Keep all per-image measurement worksheets in the same root workbook.
+- Rebuild two aggregate worksheets in the same workbook:
+  - Chinese label for "shear angle": shear-angle equation, angle, R^2, fit point count, and ROI.
+  - Chinese label for "discharge distance": total-region reference length, reference pixels, discharge-distance pixels, discharge-distance millimeters, and ROI.
+- In both aggregate worksheets, the first column header is the Chinese label for "group number", and its value is the source image stem without extension.
+- In the shear-angle aggregate worksheet, merge the first-column group-number cells for rows that share the same image stem.
+- In the discharge-distance aggregate worksheet, record only the total-region row for each image, not former/front or latter/rear rows.
 - Excel columns:
   - image name
   - region
