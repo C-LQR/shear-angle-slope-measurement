@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 
 ZH = {
@@ -25,6 +27,9 @@ ZH = {
     "runout_pixels": "\u503e\u6cfb\u8ddd\u79bb(px)",
     "runout_distance": "\u503e\u6cfb\u8ddd\u79bb(mm)",
     "runout_label": "\u503e\u6cfb\u8ddd\u79bb",
+    "group_id": "\u7ec4\u53f7",
+    "shear_sheet": "\u526a\u5207\u89d2",
+    "runout_sheet": "\u503e\u6cfb\u8ddd\u79bb",
     "material_slope": "\u76d2\u4f53\u5916\u6d41\u51fa\u7269\u6599\u659c\u5761",
     "former": "\u524d\u7aef",
     "latter": "\u540e\u7aef",
@@ -320,6 +325,121 @@ def save_images(results: dict, image_path: Path, root: Path) -> tuple[Path, list
     return local_path, fit_paths
 
 
+def style_table(ws, max_row: int, max_col: int, widths: list[int], number_formats: dict[int, str]) -> None:
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    border = Border(
+        left=Side(style="thin", color="D1D5DB"),
+        right=Side(style="thin", color="D1D5DB"),
+        top=Side(style="thin", color="D1D5DB"),
+        bottom=Side(style="thin", color="D1D5DB"),
+    )
+    for row in ws.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+        for cell in row:
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+            if cell.row == 1:
+                cell.font = Font(bold=True)
+                cell.fill = header_fill
+            elif cell.column in number_formats:
+                cell.number_format = number_formats[cell.column]
+    for index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+    ws.freeze_panes = "A2"
+
+
+def result_sheet_sort_key(sheet_name: str) -> tuple[str, int, str]:
+    stem = sheet_name[: -len(ZH["fit_result"])]
+    match = re.fullmatch(r"([A-Za-z_]+)(\d+)", stem)
+    if match:
+        return (match.group(1).lower(), int(match.group(2)), stem)
+    return (stem.lower(), 0, stem)
+
+
+def group_id_from_image_name(image_name: str) -> str:
+    return Path(str(image_name)).stem
+
+
+def is_total_region(region: str) -> bool:
+    return str(region).endswith(f"-{ZH['total']}")
+
+
+def merge_group_cells(ws, group_col: int = 1, start_row: int = 2) -> None:
+    if ws.max_row < start_row:
+        return
+    merge_start = start_row
+    previous = ws.cell(row=start_row, column=group_col).value
+    for row_index in range(start_row + 1, ws.max_row + 2):
+        current = ws.cell(row=row_index, column=group_col).value if row_index <= ws.max_row else None
+        if current != previous:
+            if previous is not None and row_index - merge_start > 1:
+                ws.merge_cells(start_row=merge_start, start_column=group_col, end_row=row_index - 1, end_column=group_col)
+            merge_start = row_index
+            previous = current
+
+
+def rebuild_summary_sheets(wb) -> None:
+    result_names = [
+        name
+        for name in wb.sheetnames
+        if name.endswith(ZH["fit_result"])
+        and name not in {ZH["shear_sheet"], ZH["runout_sheet"]}
+    ]
+    result_names.sort(key=result_sheet_sort_key)
+
+    summary_specs = [
+        (
+            ZH["shear_sheet"],
+            [
+                ZH["group_id"],
+                ZH["region"],
+                ZH["equation_header"],
+                f"{ZH['shear_angle']} deg({ZH['degree']})",
+                f"R^2({ZH['r2']})",
+                ZH["n"],
+                ZH["roi"],
+            ],
+            lambda row: [group_id_from_image_name(row[0]), row[1], row[2], row[3], row[4], row[5], row[6]],
+            [16, 28, 34, 18, 18, 14, 28],
+            {4: "0.000000", 5: "0.000000", 6: "0"},
+            lambda _row: True,
+            True,
+        ),
+        (
+            ZH["runout_sheet"],
+            [
+                ZH["group_id"],
+                ZH["region"],
+                ZH["reference_length"],
+                ZH["reference_pixels"],
+                ZH["runout_pixels"],
+                ZH["runout_distance"],
+                ZH["roi"],
+            ],
+            lambda row: [group_id_from_image_name(row[0]), row[1], row[7], row[8], row[9], row[10], row[6]],
+            [16, 28, 20, 20, 18, 18, 28],
+            {3: "0.000", 4: "0", 5: "0", 6: "0.000"},
+            lambda row: is_total_region(row[1]),
+            False,
+        ),
+    ]
+
+    for sheet_name, headers, row_builder, widths, number_formats, row_filter, merge_groups in summary_specs:
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.create_sheet(sheet_name)
+        ws.delete_rows(1, ws.max_row)
+        rows = [headers]
+        for result_name in result_names:
+            result_ws = wb[result_name]
+            for values in result_ws.iter_rows(min_row=2, max_col=11, values_only=True):
+                if values[0] and row_filter(values):
+                    rows.append(row_builder(values))
+        for row_index, row_values in enumerate(rows, start=1):
+            for col_index, value in enumerate(row_values, start=1):
+                ws.cell(row=row_index, column=col_index, value=value)
+        style_table(ws, len(rows), len(headers), widths, number_formats)
+        if merge_groups:
+            merge_group_cells(ws)
+
+
 def save_workbook(results: dict, image_path: Path, root: Path, workbook_name: str | None) -> Path:
     workbook_path = root / (workbook_name or f"{root.name}.xlsx")
     sheet_name = f"{image_path.stem}{ZH['fit_result']}"
@@ -365,32 +485,14 @@ def save_workbook(results: dict, image_path: Path, root: Path, workbook_name: st
         for col_index, value in enumerate(row_values, start=1):
             ws.cell(row=row_index, column=col_index, value=value)
 
-    header_fill = PatternFill("solid", fgColor="D9EAF7")
-    border = Border(
-        left=Side(style="thin", color="D1D5DB"),
-        right=Side(style="thin", color="D1D5DB"),
-        top=Side(style="thin", color="D1D5DB"),
-        bottom=Side(style="thin", color="D1D5DB"),
+    style_table(
+        ws,
+        len(rows),
+        11,
+        [18, 28, 34, 18, 18, 14, 28, 20, 20, 18, 18],
+        {4: "0.000000", 5: "0.000000", 6: "0", 8: "0.000", 9: "0", 10: "0", 11: "0.000"},
     )
-    for row in ws.iter_rows(min_row=1, max_row=len(rows), min_col=1, max_col=11):
-        for cell in row:
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = border
-            if cell.row == 1:
-                cell.font = Font(bold=True)
-                cell.fill = header_fill
-    for row_index in range(2, len(rows) + 1):
-        ws.cell(row=row_index, column=4).number_format = "0.000000"
-        ws.cell(row=row_index, column=5).number_format = "0.000000"
-        ws.cell(row=row_index, column=6).number_format = "0"
-        ws.cell(row=row_index, column=8).number_format = "0.000"
-        ws.cell(row=row_index, column=9).number_format = "0"
-        ws.cell(row=row_index, column=10).number_format = "0"
-        ws.cell(row=row_index, column=11).number_format = "0.000"
-    widths = [18, 28, 34, 18, 18, 14, 28, 20, 20, 18, 18]
-    for index, width in enumerate(widths, start=1):
-        ws.column_dimensions[chr(64 + index)].width = width
-    ws.freeze_panes = "A2"
+    rebuild_summary_sheets(wb)
     wb.save(workbook_path)
     return workbook_path
 
